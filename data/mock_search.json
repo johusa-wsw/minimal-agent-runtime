@@ -1,0 +1,32 @@
+[
+  {
+    "id": "agent-runtime",
+    "title": "Agent Runtime",
+    "content": "Agent Runtime 负责接收用户输入、调用大模型、执行工具、管理上下文，并根据工具结果决定继续循环还是返回最终答案。",
+    "keywords": ["agent", "runtime", "工具调用", "循环"]
+  },
+  {
+    "id": "tool-calling",
+    "title": "Tool Calling",
+    "content": "Tool Calling 是让大模型根据工具名称、描述和参数 Schema，自主决定是否调用外部工具的机制。",
+    "keywords": ["tool calling", "function calling", "schema", "工具"]
+  },
+  {
+    "id": "session",
+    "title": "Session 管理",
+    "content": "Session 用于隔离不同聊天窗口的状态。即使属于同一个用户，不同 session_id 的消息和任务也不能互相污染。",
+    "keywords": ["session", "会话", "隔离", "窗口"]
+  },
+  {
+    "id": "context",
+    "title": "Context 管理",
+    "content": "Context 管理通常保留系统提示、历史摘要、最近消息和当前用户输入。上下文过长时，可以将旧消息压缩成摘要。",
+    "keywords": ["context", "上下文", "摘要", "压缩"]
+  },
+  {
+    "id": "memory",
+    "title": "Agent Memory",
+    "content": "Agent Memory 用于保存和召回用户偏好、长期事实、历史任务状态等信息。Memory 不应该等同于无差别保存全部聊天记录。",
+    "keywords": ["memory", "记忆", "召回"]
+  }
+]
