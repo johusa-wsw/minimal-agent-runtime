@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from minimal_agent.llm.base import BaseLLMClient
 from minimal_agent.prompts.system_prompt import (
@@ -16,6 +17,7 @@ from minimal_agent.runtime.parser import (
     ResponseParseError,
     ResponseParser,
 )
+from minimal_agent.session.store import SessionStore
 from minimal_agent.tools.base import ToolContext
 from minimal_agent.tools.registry import ToolRegistry
 
@@ -46,14 +48,16 @@ class MaxStepsExceededError(AgentRuntimeError):
 
 
 class AgentRuntime:
-    """最小可用 Agent 核心循环。"""
+    """带 Session 持久化能力的最小 Agent Runtime。"""
 
     def __init__(
         self,
         llm: BaseLLMClient,
         registry: ToolRegistry,
         parser: ResponseParser | None = None,
+        session_store: SessionStore | None = None,
         max_steps: int = 8,
+        history_message_limit: int = 100,
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
         if max_steps < 1:
@@ -61,10 +65,19 @@ class AgentRuntime:
                 "max_steps must be at least 1"
             )
 
+        if history_message_limit < 1:
+            raise ValueError(
+                "history_message_limit must be at least 1"
+            )
+
         self._llm = llm
         self._registry = registry
         self._parser = parser or ResponseParser()
+        self._session_store = session_store
         self._max_steps = max_steps
+        self._history_message_limit = (
+            history_message_limit
+        )
         self._system_prompt = system_prompt
 
     def run(
@@ -92,16 +105,30 @@ class AgentRuntime:
                 "session_id cannot be empty"
             )
 
+        history = self._load_history(
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+        user_message = ChatMessage(
+            role="user",
+            content=user_input,
+        )
+
         messages = [
             ChatMessage(
                 role="system",
                 content=self._system_prompt,
             ),
-            ChatMessage(
-                role="user",
-                content=user_input,
-            ),
+            *history,
+            user_message,
         ]
+
+        self._persist_message(
+            user_id=user_id,
+            session_id=session_id,
+            message=user_message,
+        )
 
         tool_context = ToolContext(
             user_id=user_id,
@@ -124,7 +151,8 @@ class AgentRuntime:
                     raw_output
                 )
             except ResponseParseError as exc:
-                # 保留模型原始错误输出。
+                # 错误输出只保留在当前 Runtime 上下文，
+                # 不写入长期 Session 历史。
                 messages.append(
                     ChatMessage(
                         role="assistant",
@@ -132,8 +160,6 @@ class AgentRuntime:
                     )
                 )
 
-                # 将格式错误反馈给模型，
-                # 让模型在下一轮自我修正。
                 messages.append(
                     ChatMessage(
                         role="system",
@@ -152,11 +178,19 @@ class AgentRuntime:
                 decision,
                 FinalDecision,
             ):
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    content=decision.answer,
+                )
+
                 messages.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=decision.answer,
-                    )
+                    assistant_message
+                )
+
+                self._persist_message(
+                    user_id=user_id,
+                    session_id=session_id,
+                    message=assistant_message,
                 )
 
                 return AgentRunResult(
@@ -169,11 +203,13 @@ class AgentRuntime:
                 decision,
                 ToolCallDecision,
             ):
+                assistant_tool_call = ChatMessage(
+                    role="assistant",
+                    content=decision.model_dump_json(),
+                )
+
                 messages.append(
-                    ChatMessage(
-                        role="assistant",
-                        content=decision.model_dump_json(),
-                    )
+                    assistant_tool_call
                 )
 
                 tool_result = self._registry.execute(
@@ -182,17 +218,26 @@ class AgentRuntime:
                     context=tool_context,
                 )
 
-                messages.append(
-                    ChatMessage(
-                        role="tool",
-                        name=decision.tool_name,
-                        content=json.dumps(
-                            tool_result.model_dump(
-                                mode="json"
-                            ),
-                            ensure_ascii=False,
+                tool_message = ChatMessage(
+                    role="tool",
+                    name=decision.tool_name,
+                    content=json.dumps(
+                        tool_result.model_dump(
+                            mode="json"
                         ),
-                    )
+                        ensure_ascii=False,
+                    ),
+                )
+
+                messages.append(tool_message)
+
+                self._persist_messages(
+                    user_id=user_id,
+                    session_id=session_id,
+                    messages=[
+                        assistant_tool_call,
+                        tool_message,
+                    ],
                 )
 
                 continue
@@ -206,10 +251,54 @@ class AgentRuntime:
             messages=messages,
         )
 
+    def _load_history(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> list[ChatMessage]:
+        if self._session_store is None:
+            return []
+
+        return self._session_store.load_messages(
+            user_id=user_id,
+            session_id=session_id,
+            limit=self._history_message_limit,
+        )
+
+    def _persist_message(
+        self,
+        user_id: str,
+        session_id: str,
+        message: ChatMessage,
+    ) -> None:
+        if self._session_store is None:
+            return
+
+        self._session_store.append_message(
+            user_id=user_id,
+            session_id=session_id,
+            message=message,
+        )
+
+    def _persist_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        messages: list[ChatMessage],
+    ) -> None:
+        if self._session_store is None:
+            return
+
+        self._session_store.append_messages(
+            user_id=user_id,
+            session_id=session_id,
+            messages=messages,
+        )
+
     def _call_llm(
         self,
         messages: list[ChatMessage],
-        tools: list[dict],
+        tools: list[dict[str, Any]],
     ) -> str:
         try:
             return self._llm.complete(
