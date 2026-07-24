@@ -1942,3 +1942,9 @@ docs/AI\_PROMPTS\_AND\_PROBLEM\_SOLVING.md
 
 
 
+\## 演示视频
+
+
+
+\[查看 Minimal Agent Runtime 操作演示](替换为GitHub-Release中的视频附件链接)
+
