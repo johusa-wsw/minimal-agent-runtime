@@ -1946,5 +1946,5 @@ docs/AI\_PROMPTS\_AND\_PROBLEM\_SOLVING.md
 
 
 
-\[查看 Minimal Agent Runtime 操作演示](替换为GitHub-Release中的视频附件链接)
+\[查看 Minimal Agent Runtime 操作演示](https://github.com/johusa-wsw/minimal-agent-runtime/releases/tag/v1.0-demo)
 
