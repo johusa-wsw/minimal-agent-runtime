@@ -402,6 +402,95 @@ class SessionStore:
                     session_id,
                 ),
             )
+    def compact_session(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: str,
+        keep_last: int,
+    ) -> int:
+        """保存摘要，并只保留最后 keep_last 条原始消息。
+
+        摘要更新和消息删除在同一个 SQLite 事务中完成，
+        避免只完成其中一步导致状态不一致。
+
+        返回被删除的消息数量。
+        """
+
+        self._validate_identity(
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+        if keep_last < 0:
+            raise ValueError(
+                "keep_last cannot be negative"
+            )
+
+        now = utc_now()
+
+        with self._connect() as connection:
+            self._ensure_session_on_connection(
+                connection=connection,
+                user_id=user_id,
+                session_id=session_id,
+                now=now,
+            )
+
+            connection.execute(
+                """
+                UPDATE sessions
+                SET summary = ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                  AND session_id = ?
+                """,
+                (
+                    summary.strip(),
+                    now,
+                    user_id,
+                    session_id,
+                ),
+            )
+
+            if keep_last == 0:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM messages
+                    WHERE user_id = ?
+                      AND session_id = ?
+                    """,
+                    (
+                        user_id,
+                        session_id,
+                    ),
+                )
+
+            else:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM messages
+                    WHERE user_id = ?
+                      AND session_id = ?
+                      AND id NOT IN (
+                          SELECT id
+                          FROM messages
+                          WHERE user_id = ?
+                            AND session_id = ?
+                          ORDER BY id DESC
+                          LIMIT ?
+                      )
+                    """,
+                    (
+                        user_id,
+                        session_id,
+                        user_id,
+                        session_id,
+                        keep_last,
+                    ),
+                )
+
+        return max(cursor.rowcount, 0)
 
     @staticmethod
     def _ensure_session_on_connection(

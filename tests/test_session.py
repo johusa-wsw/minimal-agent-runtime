@@ -200,3 +200,46 @@ def test_summary_can_be_saved(
     assert summary == (
         "用户正在开发 Agent Runtime。"
     )
+def test_compact_session_keeps_recent_messages(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(
+        tmp_path / "agent.db"
+    )
+
+    for index in range(6):
+        store.append_message(
+            user_id="user-a",
+            session_id="window-1",
+            message=ChatMessage(
+                role="user",
+                content=f"消息 {index}",
+            ),
+        )
+
+    removed = store.compact_session(
+        user_id="user-a",
+        session_id="window-1",
+        summary="此前共有四条旧消息。",
+        keep_last=2,
+    )
+
+    messages = store.load_messages(
+        user_id="user-a",
+        session_id="window-1",
+    )
+
+    assert removed == 4
+
+    assert [
+        message.content
+        for message in messages
+    ] == [
+        "消息 4",
+        "消息 5",
+    ]
+
+    assert store.get_summary(
+        user_id="user-a",
+        session_id="window-1",
+    ) == "此前共有四条旧消息。"

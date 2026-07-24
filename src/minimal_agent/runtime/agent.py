@@ -17,6 +17,9 @@ from minimal_agent.runtime.parser import (
     ResponseParseError,
     ResponseParser,
 )
+from minimal_agent.context.manager import (
+    ContextManager,
+)
 from minimal_agent.session.store import SessionStore
 from minimal_agent.tools.base import ToolContext
 from minimal_agent.tools.registry import ToolRegistry
@@ -56,6 +59,7 @@ class AgentRuntime:
         registry: ToolRegistry,
         parser: ResponseParser | None = None,
         session_store: SessionStore | None = None,
+	context_manager: ContextManager | None = None,
         max_steps: int = 8,
         history_message_limit: int = 100,
         system_prompt: str = SYSTEM_PROMPT,
@@ -74,10 +78,18 @@ class AgentRuntime:
         self._registry = registry
         self._parser = parser or ResponseParser()
         self._session_store = session_store
+        self._context_manager = context_manager
+
+        if (
+            self._context_manager is None
+            and self._session_store is not None
+        ):
+            self._context_manager = ContextManager(
+                session_store=self._session_store
+            )
+
         self._max_steps = max_steps
-        self._history_message_limit = (
-            history_message_limit
-        )
+        self._history_message_limit = history_message_limit
         self._system_prompt = system_prompt
 
     def run(
@@ -256,6 +268,17 @@ class AgentRuntime:
         user_id: str,
         session_id: str,
     ) -> list[ChatMessage]:
+        if self._context_manager is not None:
+            context_window = (
+                self._context_manager
+                .build_context(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+            )
+
+            return context_window.messages
+
         if self._session_store is None:
             return []
 
