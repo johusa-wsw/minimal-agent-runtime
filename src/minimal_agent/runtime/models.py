@@ -74,3 +74,5 @@ class AgentRunResult(BaseModel):
     answer: str
     steps: int
     messages: list[ChatMessage]
+    run_id: str | None = None
+    trace_path: str | None = None

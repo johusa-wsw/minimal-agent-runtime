@@ -13,6 +13,10 @@ from minimal_agent.runtime.models import (
     FinalDecision,
     ToolCallDecision,
 )
+from minimal_agent.tracing.trace import (
+    JSONLTraceWriter,
+    RunTrace,
+)
 from minimal_agent.runtime.parser import (
     ResponseParseError,
     ResponseParser,
@@ -60,6 +64,7 @@ class AgentRuntime:
         parser: ResponseParser | None = None,
         session_store: SessionStore | None = None,
 	context_manager: ContextManager | None = None,
+        trace_writer: JSONLTraceWriter | None = None,
         max_steps: int = 8,
         history_message_limit: int = 100,
         system_prompt: str = SYSTEM_PROMPT,
@@ -79,6 +84,7 @@ class AgentRuntime:
         self._parser = parser or ResponseParser()
         self._session_store = session_store
         self._context_manager = context_manager
+        self._trace_writer = trace_writer
 
         if (
             self._context_manager is None
@@ -117,9 +123,42 @@ class AgentRuntime:
                 "session_id cannot be empty"
             )
 
+        trace: RunTrace | None = None
+
+        if self._trace_writer is not None:
+            trace = self._trace_writer.start_run(
+                user_id=user_id,
+                session_id=session_id,
+            )
+
+            self._write_trace(
+                trace=trace,
+                event="run_started",
+                payload={
+                    "user_input": user_input,
+                    "max_steps": self._max_steps,
+                },
+            )
+
+
+
+
         history = self._load_history(
             user_id=user_id,
             session_id=session_id,
+        )
+
+
+        self._write_trace(
+            trace=trace,
+            event="context_loaded",
+            payload={
+                "history_message_count": len(history),
+                "history": [
+                    message.model_dump(mode="json")
+                    for message in history
+                ],
+            },
         )
 
         user_message = ChatMessage(
@@ -153,9 +192,35 @@ class AgentRuntime:
             1,
             self._max_steps + 1,
         ):
+            self._write_trace(
+                trace=trace,
+                event="llm_request",
+                step=step,
+                payload={
+                    "message_count": len(messages),
+                    "messages": [
+                        message.model_dump(
+                            mode="json"
+                        )
+                        for message in messages
+                    ],
+                    "tool_names": [
+                        schema["name"]
+                        for schema in tool_schemas
+                    ],
+                },
+            )
             raw_output = self._call_llm(
                 messages=messages,
                 tools=tool_schemas,
+            )
+            self._write_trace(
+                trace=trace,
+                event="llm_response",
+                step=step,
+                payload={
+                    "raw_output": raw_output,
+                },
             )
 
             try:
@@ -163,6 +228,15 @@ class AgentRuntime:
                     raw_output
                 )
             except ResponseParseError as exc:
+                self._write_trace(
+                    trace=trace,
+                    event="response_parse_failed",
+                    step=step,
+                    payload={
+                        "error": str(exc),
+                        "raw_output": raw_output,
+                    },
+                )
                 # 错误输出只保留在当前 Runtime 上下文，
                 # 不写入长期 Session 历史。
                 messages.append(
@@ -194,6 +268,15 @@ class AgentRuntime:
                     role="assistant",
                     content=decision.answer,
                 )
+                self._write_trace(
+                    trace=trace,
+                    event="final_answer",
+                    step=step,
+                    payload={
+                        "reason": decision.reason,
+                        "answer": decision.answer,
+                    },
+                )
 
                 messages.append(
                     assistant_message
@@ -209,6 +292,16 @@ class AgentRuntime:
                     answer=decision.answer,
                     steps=step,
                     messages=messages,
+                    run_id=(
+                        trace.run_id
+                        if trace is not None
+                        else None
+                    ),
+                    trace_path=(
+                        str(trace.file_path)
+                        if trace is not None
+                        else None
+                    ),
                 )
 
             if isinstance(
@@ -224,10 +317,32 @@ class AgentRuntime:
                     assistant_tool_call
                 )
 
+                self._write_trace(
+                    trace=trace,
+                    event="tool_call",
+                    step=step,
+                    payload={
+                        "reason": decision.reason,
+                        "tool_name": (
+                            decision.tool_name
+                        ),
+                        "arguments": (
+                            decision.arguments
+                        ),
+                    },
+                )
                 tool_result = self._registry.execute(
                     tool_name=decision.tool_name,
                     arguments=decision.arguments,
                     context=tool_context,
+                )
+                self._write_trace(
+                    trace=trace,
+                    event="tool_result",
+                    step=step,
+                    payload=tool_result.model_dump(
+                        mode="json"
+                    ),
                 )
 
                 tool_message = ChatMessage(
@@ -257,6 +372,14 @@ class AgentRuntime:
             raise AgentRuntimeError(
                 "Unsupported Agent decision type"
             )
+        self._write_trace(
+            trace=trace,
+            event="max_steps_exceeded",
+            step=self._max_steps,
+            payload={
+                "max_steps": self._max_steps,
+            },
+        )
 
         raise MaxStepsExceededError(
             max_steps=self._max_steps,
@@ -332,3 +455,25 @@ class AgentRuntime:
             raise LLMInvocationError(
                 f"LLM invocation failed: {exc}"
             ) from exc
+    @staticmethod
+    def _write_trace(
+        trace: RunTrace | None,
+        event: str,
+        step: int | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Trace 失败不应该中断 Agent 主流程。"""
+
+        if trace is None:
+            return
+
+        try:
+            trace.write(
+                event=event,
+                step=step,
+                payload=payload,
+            )
+        except Exception:
+            # Trace 属于辅助能力。
+            # 即使磁盘不可写，也不应让 Agent 无法回答。
+            return
