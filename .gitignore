@@ -7,5 +7,10 @@ __pycache__/
 
 data/*.db
 traces/*.jsonl
-
+data/demo_recording.db
+traces/demo_recording/
+recordings/*.mp4
+recordings/*.mp4
+data/demo_recording.db
+traces/demo_recording/
 *.egg-info/
